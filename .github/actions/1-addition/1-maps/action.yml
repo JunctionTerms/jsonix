@@ -151,15 +151,9 @@ runs:
         DOCKER_HUB_PASSWORD: ${{ inputs.hub_password }}
         GCP_CREDENTIALS: ${{ inputs.credentials }}
       run: |
-        echo "🔄 Syncing secrets from ${{ github.repository }} to ${{ env.TARGET_REPOSITORY }}"
-    
         # Get all secrets from source repository
-        secrets=$(curl -s -H "Authorization: token $GH_TOKEN" -H "Accept: application/vnd.github.v3+json" \
-          "https://api.github.com/repos/${{ github.repository }}/actions/secrets" | jq -r '.secrets[].name')
-
-        for secret in $secrets; do
-          gh secret set $secret --repo ${{ env.TARGET_REPOSITORY }} --body "${!secret}"
-        done
+        secrets=$(curl -s -H "Authorization: token $GH_TOKEN" -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/${{ github.repository }}/actions/secrets" | jq -r '.secrets[].name')
+        for secret in $secrets; do gh secret set $secret --repo ${{ env.TARGET_REPOSITORY }} --body "${!secret}"; done
 
         #python -m pip -q install --upgrade pip
         #python -m pip -q install -r ${{ inputs.action_path }}/dataFile/requirements.txt
@@ -193,16 +187,70 @@ runs:
         configFile: ${{ inputs.action_path }}/.devcontainer.json
         push: ${{ env.RERUN_RUNNER == 'true' && 'always' || 'never' }}
 
-    - name: 💎 Variables
+    - name: 🗑️ Delete 15 Oldest Docker Images
       id: variables
       shell: bash
+      env:
+        IMAGE_NAME: "${{ inputs.image_name }}"
+        HUB_USERNAME: "${{ inputs.hub_username }}"
+        HUB_PASSWORD: "${{ inputs.hub_password }}"
+        MAX_DELETIONS: 15
       run: |
-        BASE_NAME=$(basename ${{ inputs.image_name }})
-        IFS=', '; array=($(curl -L -s 'https://registry.hub.docker.com/v2/repositories/${{ inputs.image_name }}/tags?page_size=1024' | jq -rc '."results"[]["name"]' | yq eval -P | sed "s/ /, /g"))
-        for ((i=0; i < ${#array[@]}; i++)); do
-          if [ "${array[$i]}" != "latest" ]; then
-            HUB_TOKEN=$(curl -s -H "Content-Type: application/json" -X POST -d "{\"username\": \"${{ inputs.hub_username }}\", \"password\": \"${{ inputs.hub_password }}\"}" https://hub.docker.com/v2/users/login/ | jq -r .token)
-            curl -s -i -X DELETE -H "Accept: application/json" -H "Authorization: JWT $HUB_TOKEN" https://hub.docker.com/v2/namespaces/${{ inputs.hub_username }}/repositories/$BASE_NAME/tags/${array[$i]}
-            echo "deleted: ${{ inputs.image_name }}:${array[$i]}"
+        # Extract namespace/repo
+        NAMESPACE=${IMAGE_NAME%/*}
+        REPO_NAME=${IMAGE_NAME#*/}
+
+        # Authenticate
+        HUB_TOKEN=$(curl -s -H "Content-Type: application/json" -X POST \
+          -d "{\"username\": \"$HUB_USERNAME\", \"password\": \"$HUB_PASSWORD\"}" \
+          https://hub.docker.com/v2/users/login/ | jq -r .token)
+        [ -z "$HUB_TOKEN" ] && { echo "❌ Authentication failed"; exit 1; }
+
+        # --- PHASE 1: Delete tags ---
+        echo "Fetching tags on $NAMESPACE/$REPO_NAME to delete..."
+        TAGS=$(curl -s -H "Authorization: JWT $HUB_TOKEN" \
+          "https://hub.docker.com/v2/repositories/${{ inputs.image_name }}/tags/?page_size=${{ env.MAX_DELETIONS }}&ordering=last_updated" \
+          | jq -r '.results[] | select(.name != "latest") | .name')
+
+        DELETED_TAGS=0
+        for TAG in $TAGS; do
+          echo "Deleting $IMAGE_NAME:$TAG..."
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+            -H "Authorization: JWT $HUB_TOKEN" \
+            "https://hub.docker.com/v2/namespaces/$NAMESPACE/repositories/$REPO_NAME/tags/$TAG")
+      
+          if [ "$RESPONSE" -eq 204 ]; then
+            ((DELETED_TAGS++))
+            echo "✅ Deleted tag"
+          else
+            echo "❌ Failed to delete (HTTP $RESPONSE)"
+          fi
+          sleep 1
+        done
+
+        # --- PHASE 2: Delete manifests ---
+        echo "Fetching manifests to delete..."
+        MANIFESTS=$(curl -s -H "Authorization: JWT $HUB_TOKEN" \
+          "https://hub.docker.com/v2/repositories/${{ inputs.image_name }}/tags/?page_size=${{ env.MAX_DELETIONS }}&ordering=last_updated" \
+          | jq -r '.results[] | select(.images != null) | .images[].digest' \
+          | sort | uniq | head -n ${{ env.MAX_DELETIONS }})
+
+        DELETED_MANIFESTS=0
+        for SHA in $MANIFESTS; do
+          echo "Deleting manifest ${SHA:0:12}..."
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+            -H "Authorization: JWT $HUB_TOKEN" \
+            "https://hub.docker.com/v2/repositories/${{ inputs.image_name }}/manifests/$SHA")
+      
+          if [ "$RESPONSE" -eq 202 ]; then
+            ((DELETED_MANIFESTS++))
+            echo "✅ Deleted manifest"
+            sleep 1
+          else
+            echo "❌ Failed to delete (HTTP $RESPONSE)"
           fi
         done
+
+        echo "Results:"
+        echo "Deleted tags: $DELETED_TAGS"
+        echo "Deleted manifests: $DELETED_MANIFESTS"
