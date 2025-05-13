@@ -95,10 +95,12 @@ jekyll_build() {
   [[ $1 != *"github.io"* ]] && sed -i "1s|^|baseurl: /$1\n|" ${RUNNER_TEMP}/_config.yml
   
   FOLDER="span$(( 19 - $SITEID ))"
-  TARGET_REPOSITORY=${OWNER}/$1
   gh variable set FOLDER --body "$FOLDER"
   echo 'FOLDER='${FOLDER} >> ${RUNNER_TEMP}/.env
+  
+  TARGET_REPOSITORY="${OWNER}/$1"
   echo 'repo='${TARGET_REPOSITORY} >> ${GITHUB_OUTPUT}
+  gh variable set TARGET_REPOSITORY --body "$TARGET_REPOSITORY"
   echo 'TARGET_REPOSITORY='${TARGET_REPOSITORY} >> ${GITHUB_ENV}
 
   sed -i "1s|^|title: eQuantum\n|" ${RUNNER_TEMP}/_config.yml
@@ -123,11 +125,6 @@ jekyll_build() {
 
   fi
    
-  # Fetch SHA, encode new content, and update in one step
-  gh api --method PUT /repos/${TARGET_REPOSITORY}/contents/.github/workflows/main.yml \
-    -f sha="$(gh api /repos/${TARGET_REPOSITORY}/contents/.github/workflows/main.yml --jq '.sha')" \
-    -f message="Update file" -f content="$(base64 -w0 .github/workflows/main.yml)" > /dev/null
-
 }
 
 # Define the next repository function using jq

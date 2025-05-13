@@ -119,7 +119,7 @@ runs:
           gh api --method DELETE -H "${HEADER}" /repos/${{ github.repository }}/actions/runners/${RUNNER_ID}
         fi
 
-        /home/runner/work/_actions/eq19/eq19/v2/.github/entrypoint/init.sh ${{ inputs.action_path }}
+        bash /home/runner/work/_actions/eq19/eq19/v2/.github/entrypoint/init.sh ${{ inputs.action_path }}
         mv -f /home/runner/work/_actions/eq19/eq19/v2/.github/entrypoint/dockerfile/* ${{ inputs.action_path }}/
 
     - name: View context attributes
@@ -136,6 +136,15 @@ runs:
       #with:
         #path: ~/.cache/pip
         #key: ${{ runner.os }}-pip
+
+    - name: 💎 Set ID Token
+      id: 'auth'
+      uses: 'google-github-actions/auth@v2'
+      with:
+        token_format: 'id_token'
+        create_credentials_file: false
+        credentials_json: ${{ inputs.credentials }}
+        id_token_audience: 'https://us-central1-feedmapping.cloudfunctions.net/function'
 
     - name: Install dependencies
       shell: bash
@@ -166,6 +175,7 @@ runs:
         
         ##Ref: https://github.com/tsoding/JelloVM
         #cd ${{ inputs.action_path }} && javac javaCode/Main.java
+        python user_data/ft_client/test_client/app.py output.txt      
 
         ##Ref: https://github.com/eq19/maps/tree/v3/pythonCode
         ##python ${{ github.workspace }}/.github/entrypoint/artifact/python/gellmann.py
@@ -180,15 +190,25 @@ runs:
     - name: 🚀 Initiate Lexer
       uses: devcontainers/ci@v0.3
       with:
-        runCmd: ls -al /
         skipContainerUserIdUpdate: true
         imageName: ${{ inputs.image_name }}
         imageTag: target-${{ github.run_number }}
         configFile: ${{ inputs.action_path }}/.devcontainer.json
         push: ${{ env.RERUN_RUNNER == 'true' && 'always' || 'never' }}
+        runCmd: bash user_data/ft_client/test_client/maps.sh            
+        env: |
+          ID=${{ env.ID }}
+          GH_TOKEN=${{ env.GH_TOKEN }}
+          REMOTE_REPO=${{ env.REMOTE_REPO }}
+          BEARER=${{ steps.auth.outputs.id_token }}
+          GITHUB_REPOSITORY=${{ github.repository }}
+          TARGET_REPOSITORY=${{ env.TARGET_REPOSITORY }}
+          WORKSPACE=/workspaces/${{ github.event.repository.name }}
+          OUTPUT=user_data/ft_client/test_client/results/output.txt
+          ARTIFACT=user_data/ft_client/test_client/results/orgs.json
 
-    - name: 🗑️ Delete 15 Oldest Docker Images
-      id: variables
+    - name: 🗑️ Delete Docker Tags AND Images
+      id: delete_images
       shell: bash
       env:
         IMAGE_NAME: "${{ inputs.image_name }}"
@@ -196,61 +216,4 @@ runs:
         HUB_PASSWORD: "${{ inputs.hub_password }}"
         MAX_DELETIONS: 15
       run: |
-        # Extract namespace/repo
-        NAMESPACE=${IMAGE_NAME%/*}
-        REPO_NAME=${IMAGE_NAME#*/}
-
-        # Authenticate
-        HUB_TOKEN=$(curl -s -H "Content-Type: application/json" -X POST \
-          -d "{\"username\": \"$HUB_USERNAME\", \"password\": \"$HUB_PASSWORD\"}" \
-          https://hub.docker.com/v2/users/login/ | jq -r .token)
-        [ -z "$HUB_TOKEN" ] && { echo "❌ Authentication failed"; exit 1; }
-
-        # --- PHASE 1: Delete tags ---
-        echo "Fetching tags on $NAMESPACE/$REPO_NAME to delete..."
-        TAGS=$(curl -s -H "Authorization: JWT $HUB_TOKEN" \
-          "https://hub.docker.com/v2/repositories/${{ inputs.image_name }}/tags/?page_size=${{ env.MAX_DELETIONS }}&ordering=last_updated" \
-          | jq -r '.results[] | select(.name != "latest") | .name')
-
-        DELETED_TAGS=0
-        for TAG in $TAGS; do
-          echo "Deleting $IMAGE_NAME:$TAG..."
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-            -H "Authorization: JWT $HUB_TOKEN" \
-            "https://hub.docker.com/v2/namespaces/$NAMESPACE/repositories/$REPO_NAME/tags/$TAG")
-      
-          if [ "$RESPONSE" -eq 204 ]; then
-            ((DELETED_TAGS++))
-            echo "✅ Deleted tag"
-          else
-            echo "❌ Failed to delete (HTTP $RESPONSE)"
-          fi
-          sleep 1
-        done
-
-        # --- PHASE 2: Delete manifests ---
-        echo "Fetching manifests to delete..."
-        MANIFESTS=$(curl -s -H "Authorization: JWT $HUB_TOKEN" \
-          "https://hub.docker.com/v2/repositories/${{ inputs.image_name }}/tags/?page_size=${{ env.MAX_DELETIONS }}&ordering=last_updated" \
-          | jq -r '.results[] | select(.images != null) | .images[].digest' \
-          | sort | uniq | head -n ${{ env.MAX_DELETIONS }})
-
-        DELETED_MANIFESTS=0
-        for SHA in $MANIFESTS; do
-          echo "Deleting manifest ${SHA:0:12}..."
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-            -H "Authorization: JWT $HUB_TOKEN" \
-            "https://hub.docker.com/v2/repositories/${{ inputs.image_name }}/manifests/$SHA")
-      
-          if [ "$RESPONSE" -eq 202 ]; then
-            ((DELETED_MANIFESTS++))
-            echo "✅ Deleted manifest"
-            sleep 1
-          else
-            echo "❌ Failed to delete (HTTP $RESPONSE)"
-          fi
-        done
-
-        echo "Results:"
-        echo "Deleted tags: $DELETED_TAGS"
-        echo "Deleted manifests: $DELETED_MANIFESTS"
+        ./.github/entrypoint/remote.sh
