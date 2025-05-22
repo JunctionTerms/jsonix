@@ -4,7 +4,7 @@ span: span-55
 title: eQuantum
 baseurl: /jsonix
 repository: JunctionTerms/jsonix
-action: JunctionTerms/flakes/actions/runs/14989980394
+action: JunctionTerms/flakes/actions/runs/15193806604
 description: ₠Quantum Project
 
 #debug:
@@ -49,5 +49,5 @@ plugins:
 
 track:
   spin: [5, 8]
-  pinned: [maps, feed, lexer, parser, syntax, grammar, flakes, jsonix, lanyon, wiki, sitemap, wikitemplate]
+  pinned: [maps, feed, lexer, parser, syntax, grammar, flakes, jsonix, lanyon, wiki, wikitemplate, progit]
   organization: [Chetabahana, FeedMapping, GlobalZones, HybridModels, JunctionTerms, KernelPatterns, MappingSystem, NeuralSystem, ObjectModules, VirtualNetworks, WeakNegative, WeakPositive, ZeroWeak]
